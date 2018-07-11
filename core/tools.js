@@ -623,7 +623,9 @@
 		 * @returns {Function} return.reset Resets buffered calls &mdash; `output` will not be executed
 		 * until the next `input` is triggered.
 		 */
-		throttle: createBufferFunction( true ),
+		throttle: function( minInterval, output, contextObj ) {
+			return new ThrottleBuffer( minInterval, output, contextObj );
+		},
 
 		/**
 		 * Removes spaces from the start and the end of a string. The following
@@ -1270,7 +1272,9 @@
 		 * @returns {Function} return.reset Resets buffered events &mdash; `output` will not be executed
 		 * until next `input` is triggered.
 		 */
-		eventsBuffer: createBufferFunction(),
+		eventsBuffer: function( minInterval, output, contextObj ) {
+			return new EventsBuffer( minInterval, output, contextObj );
+		},
 
 		/**
 		 * Enables HTML5 elements for older browsers (IE8) in the passed document.
@@ -2244,59 +2248,132 @@
 		return result;
 	}
 
-	function createBufferFunction( throttleBuffer ) {
-		return function( minInterval, output, contextObj ) {
-			var scheduled,
-				lastOutput = 0;
+	/**
+	 *
+	 */
+	function EventsBuffer( minInterval, output, context ) {
+		/**
+		 * Minimal interval between the calls.
+		 *
+		 * @readonly
+		 * @property {Number}
+		 */
+		this._minInterval = minInterval;
 
-			contextObj = contextObj || {};
+		/**
+		 * Variable to be used as a context for the output calls.
+		 *
+		 * @readonly
+		 * @property {Mixed}
+		 */
+		this._context = context;
 
-			return {
-				input: input,
-				reset: reset
-			};
+		/**
+		 * ID of a delayed function call that will be called after current interval frame.
+		 *
+		 * @private
+		 */
+		this._scheduledTimer = 0;
 
-			function input() {
-				var args;
+		this._lastOutput = 0;
 
-				if ( throttleBuffer ) {
-					args = Array.prototype.slice.call( arguments );
-
-					if ( scheduled ) {
-						clearTimeout( scheduled );
-						scheduled = 0;
-					}
-
-				} else if ( scheduled ) {
-					return;
-				}
-
-				var diff = ( new Date() ).getTime() - lastOutput;
-
-				// If less than minInterval passed after last check,
-				// schedule next for minInterval after previous one.
-				if ( diff < minInterval ) {
-					scheduled = setTimeout( triggerOutput, minInterval - diff );
-				} else {
-					triggerOutput();
-				}
-
-				function triggerOutput() {
-					lastOutput = ( new Date() ).getTime();
-					scheduled = false;
-
-					output.apply( contextObj, args );
-				}
-			}
-
-			function reset() {
-				if ( scheduled ) {
-					clearTimeout( scheduled );
-				}
-				scheduled = lastOutput = 0;
-			}
-		};
+		this._output = CKEDITOR.tools.bind( output, context || {} );
 	}
+
+	EventsBuffer.prototype = {
+		/**
+		 * Function to be called from external code. Buffer will handle the trottling and
+		 * make sure that the buffered function doesn't get called more often than indicated
+		 * by the {@link #_minInterval}.
+		 */
+		input: function() {
+			var that = this;
+
+			if ( this._scheduledTimer && this._reschedule() === false ) {
+				return;
+			}
+
+			var diff = ( new Date() ).getTime() - this._lastOutput;
+
+			// If less than minInterval passed after last check,
+			// schedule next for minInterval after previous one.
+			if ( diff < this._minInterval ) {
+				this._scheduledTimer = setTimeout( triggerOutput, this._minInterval - diff );
+			} else {
+				triggerOutput();
+			}
+
+			function triggerOutput() {
+				that._lastOutput = ( new Date() ).getTime();
+				that._scheduledTimer = 0;
+
+				that._call();
+			}
+		},
+		reset: function() {
+			this._lastOutput = 0;
+			this._clearTimer();
+		},
+		/**
+		 * Called once function call should be rescheduled.
+		 *
+		 * @private
+		 * @returns {Boolean/undefined} If returns `false` the parent call will be stopped.
+		 */
+		_reschedule: function() {
+			return false;
+		},
+		/**
+		 * Performs an actual call. This function could be overriden.
+		 *
+		 * @private
+		 */
+		_call: function() {
+			this._output();
+		},
+		/**
+		 * Cancels the deferred timeout.
+		 *
+		 * @private
+		 */
+		_clearTimer: function() {
+			if ( this._scheduledTimer ) {
+				clearTimeout( this._scheduledTimer );
+			}
+
+			this._scheduledTimer = 0;
+		}
+	};
+
+	function ThrottleBuffer( minInterval, output, context ) {
+		EventsBuffer.call( this, minInterval, output, context );
+
+		/**
+		 * Arguments for the last scheduled call.
+		 *
+		 * @property {Mixed[]}
+		 * @private
+		 */
+		this._args = [];
+	}
+
+	ThrottleBuffer.prototype = CKEDITOR.tools.prototypedCopy( EventsBuffer.prototype );
+
+	ThrottleBuffer.prototype.input = function() {
+		this._args = Array.prototype.slice.call( arguments );
+
+		EventsBuffer.prototype.input.call( this );
+	};
+
+	ThrottleBuffer.prototype._reschedule = function() {
+		if ( this._scheduledTimer ) {
+			this._clearTimer();
+		}
+	};
+
+	ThrottleBuffer.prototype._call = function() {
+		this._output.apply( this._context, this._args );
+	};
 
 	/**
 	 * @member CKEDITOR.tools.array
